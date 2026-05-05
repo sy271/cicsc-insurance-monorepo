@@ -1,0 +1,42 @@
+# Monorepo global ignores
+
+#Report
+Report/*
+
+# Secrets
+**/.env
+**/.env.*
+!**/.env.example
+
+# Python virtual environments
+**/venv/
+**/.venv/
+**/env/
+
+# Python caches / build artifacts
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+
+# Node / frontend build artifacts
+**/node_modules/
+**/.next/
+**/out/
+**/build/
+**/dist/
+**/coverage/
+
+# Local runtime/data artifacts
+**/*.sqlite3
+**/db.sqlite3
+**/uploaded_policies.json
+**/personal_details.json
+**/*.log
+
+# IDE / OS files
+.DS_Store
+Thumbs.db
+**/.vscode/
+**/.idea/

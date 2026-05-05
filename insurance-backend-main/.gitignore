@@ -1,0 +1,47 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.python-version
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Data / local artifacts
+*.csv
+*.sqlite3
+db.sqlite3
+uploaded_policies.json
+personal_details.json
+
+# Django runtime
+media/
+staticfiles/
+
+# Notebook / caches
+.ipynb_checkpoints/
+*.ipynb
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+

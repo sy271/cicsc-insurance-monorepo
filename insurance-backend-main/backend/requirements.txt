@@ -1,0 +1,7 @@
+djangorestframework
+django-cors-headers
+python-dotenv
+openai
+google-genai
+deepseek-sdk
+PyPDF2
