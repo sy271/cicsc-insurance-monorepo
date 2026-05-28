@@ -1,52 +1,47 @@
-# CICS Insurance — AI-Powered Insurance Assistant 🛡️🤝
+# PolicySense — AI-Assisted Family Insurance Manager 🏠🔍
 
-CICS Insurance is an intelligent insurance management platform developed as part of academic and practical work at UTM. It combines a Django-based backend with a modern Next.js frontend to deliver policy management, claims handling, analytics, and an AI assistant for customer interactions.
-
-🚀 Project Overview
--------------------
-Insurance workflows are often fragmented across portals, CRMs, and manual processes. CICS Insurance provides a unified interface that streamlines policy lifecycle management, claims intake, and customer support using automation and AI-driven assistance.
+PolicySense is an AI-assisted insurance management platform focused on post-purchase family policy management (not policy selling). It centralizes family policies, extracts structured details from long insurance PDFs, detects overlap/gaps in coverage, and provides emergency, policy-grounded chatbot guidance for claims preparation. The product is designed for multi-generational households where younger family members help manage parents’ insurance safely.
 
 The Problem
 -----------
-- Fragmented tools: Agents and customers switch between multiple systems to manage policies and claims.
-- Slow claims processing: Manual steps increase turnaround time and introduce errors.
-- Poor customer experience: Limited self-service and inconsistent responses from support.
+- App & Document Fatigue: Families struggle to keep track of various insurance policies scattered across different folders or provider portals.
+- Hidden Coverage Gaps & Overlaps: Long, jargon-heavy PDFs make it difficult to identify when families are paying for duplicate coverage or lacking necessary protection.
+- Emergency Confusion: During an emergency, family members often lack immediate, clear guidance on what is covered and how to prepare a claim quickly.
 
-The Solution
-------------
-An integrated web platform with automated APIs, an AI assistant for chat-based support, and analytics to help insurers reduce processing time and improve customer satisfaction.
+Core value
+----------
+- Centralize family policies in one place for multi-member households.
+- Extract key details from long insurance PDFs automatically (coverage, limits, exclusions, dates).
+- Detect overlap and gaps in coverage to reduce wasted premiums.
+- Provide emergency, policy-grounded chatbot guidance to prepare claims effectively.
 
-✨ Key Features
+Tech Stack Used
 ---------------
-- Policy Management: CRUD operations and version history for customer policies.
-- Claims Intake: Structured forms, file uploads, and automated triage.
-- AI Assistant: Chat API and assistant module for answering policy questions and guiding users.
-- Analytics & Dashboards: Visual components for claim trends, policy distribution, and risk metrics.
-- Secure Backend: Django REST APIs with migrations and data loaders for reproducible datasets.
+- Frontend: Next.js (React, TypeScript), Tailwind UI components
+- Backend: Django + Django REST Framework
+- Database/Auth: Supabase PostgreSQL, Supabase Auth, JWT verification
+- AI Extraction: Google Gemini (`gemini-1.5-flash`) for structured policy extraction
+- PDF Processing: PyMuPDF
+- RAG Embeddings: Hugging Face `all-MiniLM-L6-v2`
+- Vector Store: Supabase `pgvector`
+- RAG Response Model: Llama via Hugging Face Inference API
+- Logic Engine: Deterministic Python rule-based checks for overlap/gap signals
+
 
 🎨 Design Thinking Process
 -------------------------
 1. Empathize
-	 - User Focus: Customers, agents, and underwriters who need fast, reliable information.
-	 - Key Finding: Users want clarity, speed, and self-service options.
+	 - User Focus: Multi-generational households, specifically younger family members assisting their parents with managing insurance safely.
+	 - Key Finding: Users feel overwhelmed by lengthy insurance documents and lack confidence in knowing exactly what is covered during an emergency.
 2. Define
-	 - The Need: Reduce manual claims steps and provide consistent policy answers.
-	 - The Goal: Improve response time and accuracy while enabling scalable self-service.
-
-🛠️ Proposed Tech Stack
-----------------------
-- Frontend: Next.js (React, TypeScript)
-- Backend: Django + Django REST Framework (Python)
-- AI / Assistant: Custom assistant module and chat API endpoints (extendable to external LLMs)
-- Database: PostgreSQL (recommended) / SQLite for local dev
-- Dev tooling: pnpm/npm for frontend, pip/virtualenv for backend
+	 - The Need: A centralized vault that automatically extracts crucial policy details and acts as a reliable guide during the stress of preparing a claim.
+	 - The Goal: Automate policy analysis to prevent wasted premiums (overlaps) and reduce claims-related anxiety through an intelligent, retrieval-grounded assistant.
 
 YouTube demo
-------------
+-------------------------
 Watch a demo of the project here:
 
 https://youtu.be/14KYDqM__t8
-
 
 <!-- Quick start (high level)
 ------------------------
