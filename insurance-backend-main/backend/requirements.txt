@@ -1,0 +1,14 @@
+djangorestframework
+django-cors-headers
+python-dotenv
+openai
+google-genai
+deepseek-sdk
+PyMuPDF
+python-jose
+psycopg[binary]
+dj-database-url
+langchain
+langchain-community
+supabase
+huggingface_hub
