@@ -28,7 +28,7 @@ Tech Stack Used
 - Logic Engine: Deterministic Python rule-based checks for overlap/gap signals
 
 
-🎨 Design Thinking Process
+Design Thinking Process
 -------------------------
 1. Empathize
 	 - User Focus: Multi-generational households, specifically younger family members assisting their parents with managing insurance safely.
