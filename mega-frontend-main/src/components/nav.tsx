@@ -24,7 +24,7 @@ export function MainNav() {
           <div className="flex">
             <div className="flex flex-shrink-0 items-center">
               <Link href="/" className="text-xl font-bold text-blue-600">
-                PolicySense
+                InsuranceHub
               </Link>
             </div>
             <div className="hidden sm:ml-6 sm:flex sm:space-x-8">

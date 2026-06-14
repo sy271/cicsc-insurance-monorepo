@@ -330,7 +330,7 @@ export default function AnalysisPage() {
 
       <Card className="mt-6">
         <CardHeader>
-          <CardTitle>Family Gap Analysis & Agent Upselling</CardTitle>
+          <CardTitle>Family Gap Analysis & Agent Upselling (Mock)</CardTitle>
           <CardDescription>
             Cross-family risk alerts and suggested products for B2B agent workflow.
           </CardDescription>

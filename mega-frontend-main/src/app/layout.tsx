@@ -18,7 +18,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "PolicySense - Simplify Your Insurance Management",
+  title: "InsuranceHub - Simplify Your Insurance Management",
   description: "All your insurance policies in one place. Analyze coverage, detect gaps, and manage claims with our AI-powered platform.",
 };
 

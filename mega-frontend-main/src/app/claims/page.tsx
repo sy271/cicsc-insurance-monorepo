@@ -1,54 +1,37 @@
-"use client"
+ "use client"
 
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { MessageSquare, Clock, ShieldCheck } from "lucide-react"
-import { emergencyRagChat, EmergencyRagResponse } from "@/lib/api"
+import { emergencyRagChat } from "@/lib/api"
 
 export default function ClaimsPage() {
-  const [emergencyPrompt, setEmergencyPrompt] = useState("My dad crashed his car.")
-  const [policyOwner, setPolicyOwner] = useState("dad")
-  const [ragResult, setRagResult] = useState<EmergencyRagResponse | null>(null)
-  const [ragLoading, setRagLoading] = useState(false)
-  const [ragError, setRagError] = useState<string | null>(null)
+  const [emergencyPrompt, setEmergencyPrompt] = useState("")
+  const [policyOwner, setPolicyOwner] = useState("")
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [ragResponse, setRagResponse] = useState("")
+  const [sources, setSources] = useState<{ filename: string; policy_owner: string }[]>([])
 
-  useEffect(() => {
-    try {
-      const cachedPrompt = localStorage.getItem("claims_emergency_prompt")
-      const cachedOwner = localStorage.getItem("claims_policy_owner")
-      const cachedResult = localStorage.getItem("claims_rag_result")
-      if (cachedPrompt) setEmergencyPrompt(cachedPrompt)
-      if (cachedOwner) setPolicyOwner(cachedOwner)
-      if (cachedResult) setRagResult(JSON.parse(cachedResult) as EmergencyRagResponse)
-    } catch (error) {
-      console.error("Failed to load cached claims data:", error)
+  const onRunEmergencyRag = async () => {
+    if (!emergencyPrompt.trim()) {
+      setError("Please describe the emergency first.")
+      return
     }
-  }, [])
-
-  useEffect(() => {
+    setLoading(true)
+    setError(null)
     try {
-      localStorage.setItem("claims_emergency_prompt", emergencyPrompt)
-      localStorage.setItem("claims_policy_owner", policyOwner)
-      if (ragResult) {
-        localStorage.setItem("claims_rag_result", JSON.stringify(ragResult))
-      }
-    } catch (error) {
-      console.error("Failed to cache claims data:", error)
-    }
-  }, [emergencyPrompt, policyOwner, ragResult])
-
-  const handleEmergencyRag = async () => {
-    setRagLoading(true)
-    setRagError(null)
-    try {
-      const result = await emergencyRagChat(emergencyPrompt, policyOwner)
-      setRagResult(result)
-    } catch (error: unknown) {
-      setRagError(error instanceof Error ? error.message : "Failed to run emergency chatbot")
+      const result = await emergencyRagChat(emergencyPrompt.trim(), policyOwner.trim())
+      setRagResponse(result.response || "")
+      setSources(result.sources || [])
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to run emergency policy check.")
     } finally {
-      setRagLoading(false)
+      setLoading(false)
     }
   }
 
@@ -61,7 +44,7 @@ export default function ClaimsPage() {
           <TabsTrigger value="report">Report Incident</TabsTrigger>
           <TabsTrigger value="verify">Coverage Check</TabsTrigger>
           <TabsTrigger value="track">Track Claims</TabsTrigger>
-          <TabsTrigger value="automation">AI Automation</TabsTrigger>
+          <TabsTrigger value="automation">AI Automation (Mock)</TabsTrigger>
         </TabsList>
 
         <TabsContent value="report">
@@ -195,78 +178,65 @@ export default function ClaimsPage() {
         <TabsContent value="automation">
           <Card>
             <CardHeader>
-              <CardTitle>Emergency RAG + Claims Automation</CardTitle>
+              <CardTitle>Emergency RAG Chat</CardTitle>
               <CardDescription>
-                AI reads family policies, verifies eligibility, and prepares a settlement checklist.
+                Ask what happened and get grounded claim guidance from indexed family policy documents.
               </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
                 <div className="border rounded-lg p-4">
-                  <h3 className="font-medium mb-2">Emergency Prompt</h3>
-                  <textarea
-                    className="w-full p-2 border rounded-md h-24 text-sm"
+                  <h3 className="font-medium mb-2">Emergency Details</h3>
+                  <Textarea
                     value={emergencyPrompt}
-                    onChange={(e) => setEmergencyPrompt(e.target.value)}
-                  />
-                  <input
-                    className="w-full p-2 border rounded-md mt-2 text-sm"
-                    placeholder="Policy owner (e.g., dad)"
-                    value={policyOwner}
-                    onChange={(e) => setPolicyOwner(e.target.value)}
+                    onChange={(event) => setEmergencyPrompt(event.target.value)}
+                    placeholder="Example: My father was admitted to hospital after a car crash. What can we claim now and what documents are needed?"
+                    className="min-h-[110px]"
                   />
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="border rounded-lg p-4">
-                    <p className="font-medium">1) Document Verification</p>
-                    <p className="text-sm text-gray-600 mt-1">IC, police report, photos, workshop invoice</p>
-                  </div>
-                  <div className="border rounded-lg p-4">
-                    <p className="font-medium">2) Eligibility Checks</p>
-                    <p className="text-sm text-gray-600 mt-1">Coverage period, exclusions, deductible review</p>
-                  </div>
-                  <div className="border rounded-lg p-4">
-                    <p className="font-medium">3) Settlement Preparation</p>
-                    <p className="text-sm text-gray-600 mt-1">Estimate payout and route to insurer workflow</p>
-                  </div>
+                <div className="border rounded-lg p-4">
+                  <h3 className="font-medium mb-2">Optional Policy Owner Filter</h3>
+                  <Input
+                    value={policyOwner}
+                    onChange={(event) => setPolicyOwner(event.target.value)}
+                    placeholder="e.g. father, mother, chen-yoke-san"
+                  />
                 </div>
 
                 <div className="flex items-start gap-3 p-4 bg-blue-50 rounded-lg border border-blue-200">
                   <ShieldCheck className="h-5 w-5 mt-0.5 text-blue-600" />
                   <p className="text-sm text-blue-900">
-                    This flow supports guided claims preparation and insurer handoff.
+                    This response is grounded on your indexed policy chunks. If no policy is found, upload/index policy docs first.
                   </p>
                 </div>
 
-                <Button className="w-full" onClick={handleEmergencyRag} disabled={ragLoading}>
-                  {ragLoading ? "Analyzing emergency..." : "Run Emergency RAG Chat"}
+                {error ? <p className="text-sm text-red-600">{error}</p> : null}
+
+                <Button className="w-full" onClick={onRunEmergencyRag} disabled={loading}>
+                  {loading ? "Checking Policy Coverage..." : "Run Emergency RAG Chat"}
                 </Button>
 
-                {ragError && (
-                  <div className="text-sm text-red-600 border border-red-200 bg-red-50 rounded-lg p-3">
-                    {ragError}
-                  </div>
-                )}
-
-                {ragResult && (
+                {ragResponse ? (
                   <div className="border rounded-lg p-4 space-y-3">
-                    <p className="font-medium">AI Emergency Response</p>
-                    <p className="text-sm whitespace-pre-wrap">{ragResult.response}</p>
-                    {ragResult.sources?.length > 0 && (
-                      <div>
-                        <p className="text-xs text-muted-foreground mb-1">Retrieved Sources:</p>
-                        <ul className="text-xs space-y-1">
-                          {ragResult.sources.map((s, idx) => (
-                            <li key={`${s.filename}-${idx}`}>
-                              {s.filename} {s.policy_owner ? `(${s.policy_owner})` : ""}
-                            </li>
+                    <p className="font-medium">AI Claim Guidance</p>
+                    <p className="text-sm whitespace-pre-wrap">{ragResponse}</p>
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground mb-1">Grounding Sources</p>
+                      {sources.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">No source metadata returned.</p>
+                      ) : (
+                        <div className="space-y-1">
+                          {sources.map((source, idx) => (
+                            <p key={`${source.filename}-${idx}`} className="text-xs text-muted-foreground">
+                              {source.filename} {source.policy_owner ? `(${source.policy_owner})` : ""}
+                            </p>
                           ))}
-                        </ul>
-                      </div>
-                    )}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                )}
+                ) : null}
               </div>
             </CardContent>
           </Card>
