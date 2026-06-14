@@ -18,18 +18,18 @@ import fitz  # PyMuPDF
 from openai import APIError, BadRequestError, OpenAI
 from django.http import JsonResponse
 from django.conf import settings
+from django.db.models import Q
 from pathlib import Path
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_chroma import Chroma
 from langchain_core.documents import Document
-from langchain_core.embeddings import Embeddings
-from langchain_community.vectorstores import SupabaseVectorStore
-from supabase import create_client
-from huggingface_hub import InferenceClient
-from .models import FamilySubProfile, PolicyDocument, PolicyShare
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from .models import FamilySubProfile, PolicyDocument, PolicyShare, FamilySubProfileManager
 from .serializers import (
     FamilySubProfileSerializer,
     PolicyDocumentSerializer,
     PolicyShareSerializer,
+    FamilySubProfileManagerSerializer,
 )
 
 try:
@@ -54,80 +54,6 @@ THREAD_ID = "thread_feAuVoWDJCTzyfTrbXh6qUNJ"
 # Set up logging
 logger = logging.getLogger(__name__)
 _VECTOR_COLLECTION = "family_policy_docs"
-
-class HFInferenceEmbeddings(Embeddings):
-    """Embeddings via Hugging Face Inference API (no local torch/sentence-transformers install)."""
-
-    def __init__(self, model_name: str, api_token: str):
-        self.model_name = model_name
-        self.client = InferenceClient(token=api_token)
-
-    def _normalize_embedding_output(self, raw) -> list[float]:
-        # 1. Handle dictionary wrappers or Hugging Face server errors
-        if isinstance(raw, dict):
-            if "error" in raw:
-                raise ValueError(f"Hugging Face API Error: {raw['error']}")
-            for key in ("embedding", "embeddings", "vector", "vectors", "data"):
-                if key in raw:
-                    return self._normalize_embedding_output(raw[key])
-            raise ValueError(f"Unexpected dict response: {raw}")
-
-        # 2. Safely handle Numpy arrays (turns arrays into standard lists)
-        if hasattr(raw, "tolist"):
-            raw = raw.tolist()
-            
-        # 3. Force convert any other weird objects to a standard Python list
-        if not isinstance(raw, list):
-            try:
-                raw = list(raw)
-            except Exception:
-                raise ValueError(f"Unrecognized response format from Hugging Face: {type(raw)}")
-
-        if not raw:
-            raise ValueError("Empty response from Hugging Face")
-
-        first = raw[0]
-
-        # Flat vector: [0.1, 0.2, ...]
-        if isinstance(first, (int, float)):
-            return [float(v) for v in raw]
-
-        # Batched: [[[...], [...]]]
-        if isinstance(first, list) and first and isinstance(first[0], list):
-            return self._normalize_embedding_output(first)
-
-        # Token embeddings: [[...], [...]]
-        if isinstance(first, list):
-            # If this is actually a list containing one vector [[...]]
-            if len(raw) == 1 and all(isinstance(v, (int, float)) for v in first):
-                return [float(v) for v in first]
-
-            pooled = [0.0] * len(first)
-            token_count = 0
-            for row in raw:
-                if not isinstance(row, list):
-                    continue
-                if len(row) != len(pooled):
-                    continue
-                for i, val in enumerate(row):
-                    pooled[i] += float(val)
-                token_count += 1
-
-            if token_count == 0:
-                raise ValueError("Could not pool token embeddings from Hugging Face response")
-            return [v / token_count for v in pooled]
-
-        raise ValueError("Unexpected embedding response format")
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        vectors: list[list[float]] = []
-        for text in texts:
-            raw = self.client.feature_extraction(model=self.model_name, text=text)
-            vectors.append(self._normalize_embedding_output(raw))
-        return vectors
-
-    def embed_query(self, text: str) -> list[float]:
-        return self.embed_documents([text])[0]
 
 PERSONAL_DETAILS_DEFAULT = {
     "income": 0,
@@ -176,67 +102,48 @@ def _get_supabase_user_id(request):
         return None, Response({"error": "Invalid or expired token"}, status=401)
 
 
+def _has_subprofile_manage_access(user_id, sub_profile):
+    return FamilySubProfileManager.objects.filter(
+        sub_profile=sub_profile,
+        manager_supabase_uid=user_id,
+        permission="manage",
+    ).exists()
+
+
+def _can_manage_subprofile(user_id, sub_profile):
+    if str(sub_profile.owner_supabase_uid) == str(user_id):
+        return True
+    if _has_subprofile_manage_access(user_id, sub_profile):
+        return True
+    # Backward-compatible fallback: existing policy-level manage share.
+    return PolicyShare.objects.filter(
+        policy__sub_profile=sub_profile,
+        shared_with_supabase_uid=user_id,
+        permission="manage",
+    ).exists()
+
+
 def _uploaded_policies_path():
     return Path(settings.BASE_DIR) / "uploaded_policies.json"
 
+
+def _vector_db_dir():
+    return Path(settings.BASE_DIR) / "chroma_db"
+
+
 def _get_embeddings():
-    token = (os.getenv("HF_API_TOKEN") or "").strip()
-    if not token:
-        raise ValueError("HF_API_TOKEN is required for Hugging Face embeddings.")
-    return HFInferenceEmbeddings(
-        model_name=os.getenv("HF_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
-        api_token=token,
+    return GoogleGenerativeAIEmbeddings(
+        model=os.getenv("GEMINI_EMBEDDING_MODEL", "models/text-embedding-004"),
+        google_api_key=os.getenv("GEMINI_API_KEY"),
     )
-
-
-def _generate_llama_response(user_message: str, context_text: str) -> str:
-    token = (os.getenv("HF_API_TOKEN") or "").strip()
-    if not token:
-        raise ValueError("HF_API_TOKEN is required for Llama generation.")
-
-    model = os.getenv("HF_LLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
-    client = InferenceClient(token=token)
-
-    system_prompt = (
-        "You are an emergency insurance assistant. Use ONLY the provided policy context. "
-        "If details are missing, state what is missing and required documents. "
-        "Give clear step-by-step actions."
-    )
-    user_prompt = f"Emergency message:\n{user_message}\n\nPolicy context:\n{context_text}"
-
-    completion = client.chat_completion(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        max_tokens=500,
-        temperature=0.2,
-    )
-    return completion.choices[0].message.content or ""
 
 
 def _get_vector_store():
-    supabase_url = (os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL") or "").strip()
-    supabase_key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    if not supabase_url or not supabase_key:
-        raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for RAG vector store.")
-
-    client = create_client(supabase_url, supabase_key)
-    return SupabaseVectorStore(
-        client=client,
-        embedding=_get_embeddings(),
-        table_name="documents",
-        query_name="match_documents",
+    return Chroma(
+        collection_name=_VECTOR_COLLECTION,
+        embedding_function=_get_embeddings(),
+        persist_directory=str(_vector_db_dir()),
     )
-
-
-def _get_supabase_client():
-    supabase_url = (os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL") or "").strip()
-    supabase_key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-    if not supabase_url or not supabase_key:
-        raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for Supabase access.")
-    return create_client(supabase_url, supabase_key)
 
 
 def _index_policy_text(text: str, metadata: dict):
@@ -248,49 +155,12 @@ def _index_policy_text(text: str, metadata: dict):
     if not chunks:
         return
 
-    # Manual insert avoids LangChain UUID id upsert conflict with bigint PK.
-    embeddings = _get_embeddings()
-    vectors = embeddings.embed_documents(chunks)
-    client = _get_supabase_client()
-    rows = [
-        {
-            "content": chunk,
-            "metadata": metadata,
-            "embedding": vector,
-        }
-        for chunk, vector in zip(chunks, vectors)
-    ]
-    client.table("documents").insert(rows).execute()
+    docs = [Document(page_content=chunk, metadata=metadata) for chunk in chunks]
+    store = _get_vector_store()
+    store.add_documents(docs)
 
 
 def _read_uploaded_policies():
-    # Preferred source: Supabase table (shared/persistent storage)
-    try:
-        client = _get_supabase_client()
-        response = (
-            client.table("policy_extractions")
-            .select("filename,content_type,extracted,stored_at,policy_owner,policy_type_hint")
-            .order("stored_at", desc=True)
-            .limit(200)
-            .execute()
-        )
-        rows = response.data or []
-        if rows:
-            return [
-                {
-                    "filename": row.get("filename"),
-                    "content_type": row.get("content_type"),
-                    "extracted": row.get("extracted") if isinstance(row.get("extracted"), dict) else {"raw": row.get("extracted")},
-                    "stored_at": row.get("stored_at"),
-                    "policy_owner": row.get("policy_owner"),
-                    "policy_type_hint": row.get("policy_type_hint"),
-                }
-                for row in rows
-            ]
-    except Exception:
-        logger.exception("Failed reading policy_extractions from Supabase, falling back to local file.")
-
-    # Fallback source: local file
     path = _uploaded_policies_path()
     if not path.exists():
         return []
@@ -305,26 +175,11 @@ def _read_uploaded_policies():
 
 
 def _append_uploaded_policy(entry: dict) -> None:
-    # Keep local copy for offline/dev fallback.
     path = _uploaded_policies_path()
     existing = _read_uploaded_policies()
     existing.append(entry)
     with path.open("w", encoding="utf-8") as f:
         json.dump(existing, f, ensure_ascii=True, indent=2)
-
-
-def _save_extraction_to_supabase(entry: dict) -> None:
-    client = _get_supabase_client()
-    client.table("policy_extractions").insert(
-        {
-            "filename": entry.get("filename"),
-            "content_type": entry.get("content_type"),
-            "extracted": entry.get("extracted"),
-            "stored_at": entry.get("stored_at"),
-            "policy_owner": entry.get("policy_owner", "family-member"),
-            "policy_type_hint": entry.get("policy_type_hint", "unknown"),
-        }
-    ).execute()
 
 
 def extract_and_minimize_pdf(uploaded_file, max_pages=10, max_chars=25000):
@@ -878,15 +733,6 @@ def analyze_with_assistant(request):
         stored_payload = None
 
     try:
-        extraction_entry = {
-            "filename": uploaded_file.name,
-            "content_type": uploaded_file.content_type,
-            "extracted": stored_payload if isinstance(stored_payload, dict) else {"raw": text},
-            "stored_at": time.time(),
-            "policy_owner": request.data.get("policy_owner", "family-member"),
-            "policy_type_hint": request.data.get("policy_type", "unknown"),
-        }
-
         # Index extracted policy text into local ChromaDB for emergency RAG chatbot.
         _index_policy_text(
             minimized_policy_text,
@@ -897,9 +743,14 @@ def analyze_with_assistant(request):
             },
         )
 
-        # Persist extraction record in Supabase (primary) + local fallback file.
-        _save_extraction_to_supabase(extraction_entry)
-        _append_uploaded_policy(extraction_entry)
+        _append_uploaded_policy(
+            {
+                "filename": uploaded_file.name,
+                "content_type": uploaded_file.content_type,
+                "extracted": stored_payload if isinstance(stored_payload, dict) else {"raw": text},
+                "stored_at": time.time(),
+            }
+        )
     except Exception:
         logger.exception("Failed to persist extracted policy")
 
@@ -910,7 +761,7 @@ def analyze_with_assistant(request):
 def emergency_rag_chat(request):
     """
     RAG emergency chatbot:
-    1) Retrieve relevant policy chunks from Supabase pgvector
+    1) Retrieve relevant policy chunks from ChromaDB
     2) Ground Gemini response on retrieved context
     """
     user_message = (request.data.get("message") or "").strip()
@@ -920,37 +771,11 @@ def emergency_rag_chat(request):
         return Response({"error": "message is required"}, status=400)
 
     try:
-        # 1) Convert user question into embedding vector
-        embeddings = _get_embeddings()
-        query_vector = embeddings.embed_query(user_message)
+        # Retrieval
+        store = _get_vector_store()
+        retriever = store.as_retriever(search_kwargs={"k": 4})
+        docs = retriever.invoke(user_message)
 
-        # 2) Connect to Supabase
-        supabase_url = (os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL") or "").strip()
-        supabase_key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
-        if not supabase_url or not supabase_key:
-            return Response(
-                {"error": "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required."},
-                status=500,
-            )
-        supabase_client = create_client(supabase_url, supabase_key)
-
-        # 3) Retrieve nearest policy chunks from pgvector
-        rpc = supabase_client.rpc(
-            "match_documents",
-            {
-                "query_embedding": query_vector,
-                "match_count": 4,
-                "filter": {},
-            },
-        ).execute()
-        rows = rpc.data or []
-        docs = [
-            Document(page_content=row.get("content", ""), metadata=row.get("metadata") or {})
-            for row in rows
-            if row.get("content")
-        ]
-
-        # Optional owner filter
         if policy_owner:
             docs = [
                 d
@@ -958,7 +783,6 @@ def emergency_rag_chat(request):
                 if str(d.metadata.get("policy_owner", "")).strip().lower() == policy_owner
             ] or docs
 
-        # Build grounded context
         context_blocks = []
         for i, doc in enumerate(docs, start=1):
             source = doc.metadata.get("filename", "policy")
@@ -973,8 +797,23 @@ def emergency_rag_chat(request):
                 }
             )
 
-        # 4) Generate grounded answer
-        answer = _generate_llama_response(user_message, context_text)
+        # Generation with grounded prompt
+        llm = ChatGoogleGenerativeAI(
+            model=os.getenv("GEMINI_CHAT_MODEL", "gemini-1.5-flash"),
+            google_api_key=os.getenv("GEMINI_API_KEY"),
+            temperature=0.2,
+        )
+
+        prompt = (
+            "You are an emergency insurance assistant. Use ONLY the provided policy context.\n"
+            "If information is missing, say what is missing and what document is needed.\n"
+            "Give practical step-by-step claim actions.\n\n"
+            f"User emergency message:\n{user_message}\n\n"
+            f"Policy context:\n{context_text}\n"
+        )
+
+        result = llm.invoke(prompt)
+        answer = getattr(result, "content", "") or ""
         return Response(
             {
                 "response": answer,
@@ -1213,7 +1052,9 @@ def family_subprofiles(request):
         return err
 
     if request.method == "GET":
-        rows = FamilySubProfile.objects.filter(owner_supabase_uid=user_id).order_by("-created_at")
+        rows = FamilySubProfile.objects.filter(
+            Q(owner_supabase_uid=user_id) | Q(managers__manager_supabase_uid=user_id)
+        ).distinct().order_by("-created_at")
         return Response(FamilySubProfileSerializer(rows, many=True).data)
 
     serializer = FamilySubProfileSerializer(data=request.data)
@@ -1231,8 +1072,11 @@ def family_policies(request):
 
     if request.method == "GET":
         own = PolicyDocument.objects.filter(sub_profile__owner_supabase_uid=user_id)
+        managed_subprofile = PolicyDocument.objects.filter(
+            sub_profile__managers__manager_supabase_uid=user_id
+        )
         shared = PolicyDocument.objects.filter(shares__shared_with_supabase_uid=user_id)
-        rows = (own | shared).distinct().order_by("-created_at")
+        rows = (own | managed_subprofile | shared).distinct().order_by("-created_at")
         return Response(PolicyDocumentSerializer(rows, many=True).data)
 
     sub_profile_id = request.data.get("sub_profile")
@@ -1244,8 +1088,11 @@ def family_policies(request):
     except FamilySubProfile.DoesNotExist:
         return Response({"error": "Sub-profile not found"}, status=404)
 
-    if str(sub.owner_supabase_uid) != str(user_id):
-        return Response({"error": "Not allowed to upload for this sub-profile"}, status=403)
+    if not _can_manage_subprofile(user_id, sub):
+        return Response(
+            {"error": "Not allowed to upload for this sub-profile"},
+            status=403,
+        )
 
     serializer = PolicyDocumentSerializer(data=request.data)
     if not serializer.is_valid():
@@ -1261,7 +1108,9 @@ def family_policy_shares(request):
         return err
 
     if request.method == "GET":
-        rows = PolicyShare.objects.filter(shared_with_supabase_uid=user_id).order_by("-created_at")
+        rows = PolicyShare.objects.filter(
+            Q(shared_with_supabase_uid=user_id) | Q(shared_by_supabase_uid=user_id)
+        ).order_by("-created_at")
         return Response(PolicyShareSerializer(rows, many=True).data)
 
     policy_id = request.data.get("policy")
@@ -1273,11 +1122,73 @@ def family_policy_shares(request):
     except PolicyDocument.DoesNotExist:
         return Response({"error": "Policy not found"}, status=404)
 
-    if str(policy.sub_profile.owner_supabase_uid) != str(user_id):
-        return Response({"error": "Only owner can share this policy"}, status=403)
+    has_policy_manage_access = PolicyShare.objects.filter(
+        policy=policy, shared_with_supabase_uid=user_id, permission="manage"
+    ).exists()
+    if not (_can_manage_subprofile(user_id, policy.sub_profile) or has_policy_manage_access):
+        return Response({"error": "Only owner or manager can share this policy"}, status=403)
+
+    shared_with_uid = request.data.get("shared_with_supabase_uid")
+    if str(shared_with_uid or "").strip() == str(user_id):
+        return Response({"error": "Cannot share a policy with yourself"}, status=400)
 
     serializer = PolicyShareSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=400)
     serializer.save(shared_by_supabase_uid=user_id)
     return Response(serializer.data, status=201)
+
+
+@api_view(["GET", "POST"])
+def family_subprofile_managers(request):
+    user_id, err = _get_supabase_user_id(request)
+    if err:
+        return err
+
+    if request.method == "GET":
+        rows = FamilySubProfileManager.objects.filter(
+            Q(sub_profile__owner_supabase_uid=user_id) | Q(manager_supabase_uid=user_id)
+        ).distinct().order_by("-created_at")
+        return Response(FamilySubProfileManagerSerializer(rows, many=True).data)
+
+    sub_profile_id = request.data.get("sub_profile")
+    manager_uid = request.data.get("manager_supabase_uid")
+    permission = (request.data.get("permission") or "manage").strip()
+
+    if not sub_profile_id:
+        return Response({"error": "sub_profile is required"}, status=400)
+    if not manager_uid:
+        return Response({"error": "manager_supabase_uid is required"}, status=400)
+
+    try:
+        sub = FamilySubProfile.objects.get(id=sub_profile_id)
+    except FamilySubProfile.DoesNotExist:
+        return Response({"error": "Sub-profile not found"}, status=404)
+
+    if not _can_manage_subprofile(user_id, sub):
+        return Response(
+            {"error": "Only owner or manager can grant sub-profile access"},
+            status=403,
+        )
+
+    if str(manager_uid).strip() == str(sub.owner_supabase_uid):
+        return Response(
+            {"error": "Owner already has full access to this sub-profile"},
+            status=400,
+        )
+
+    allowed_permissions = {"view", "claim_support", "manage"}
+    if permission not in allowed_permissions:
+        return Response({"error": "Invalid permission value"}, status=400)
+
+    row, created = FamilySubProfileManager.objects.update_or_create(
+        sub_profile=sub,
+        manager_supabase_uid=manager_uid,
+        defaults={
+            "permission": permission,
+            "granted_by_supabase_uid": user_id,
+        },
+    )
+
+    serializer = FamilySubProfileManagerSerializer(row)
+    return Response(serializer.data, status=201 if created else 200)

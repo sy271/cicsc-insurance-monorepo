@@ -9,6 +9,8 @@ python-jose
 psycopg[binary]
 dj-database-url
 langchain
+langchain-chroma
+langchain-core
 langchain-community
-supabase
-huggingface_hub
+langchain-google-genai
+langchain-text-splitters
