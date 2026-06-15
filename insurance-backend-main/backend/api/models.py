@@ -31,7 +31,7 @@ class PolicyDocument(models.Model):
     title = models.CharField(max_length=200)
     insurance_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default="other")
     provider = models.CharField(max_length=120, blank=True)
-    storage_url = models.URLField()
+    storage_url = models.CharField(max_length=500, blank=True, default="")
     metadata = models.JSONField(default=dict, blank=True)
     uploaded_by_supabase_uid = models.UUIDField(db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)

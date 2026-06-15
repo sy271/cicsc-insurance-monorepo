@@ -15,7 +15,7 @@ export default function ClaimsPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [ragResponse, setRagResponse] = useState("")
-  const [sources, setSources] = useState<{ filename: string; policy_owner: string }[]>([])
+  const [sources, setSources] = useState<{ filename: string; policy_owner: string; chunk_type?: string }[]>([])
 
   const onRunEmergencyRag = async () => {
     if (!emergencyPrompt.trim()) {
@@ -200,8 +200,12 @@ export default function ClaimsPage() {
                   <Input
                     value={policyOwner}
                     onChange={(event) => setPolicyOwner(event.target.value)}
-                    placeholder="e.g. father, mother, chen-yoke-san"
+                    placeholder="Leave blank to search all indexed policies"
                   />
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Optional filter by policy owner name (e.g. a family member&apos;s name from Family Vault).
+                    Policies uploaded on the Policies page are indexed under &quot;family-member&quot;.
+                  </p>
                 </div>
 
                 <div className="flex items-start gap-3 p-4 bg-blue-50 rounded-lg border border-blue-200">
@@ -229,7 +233,9 @@ export default function ClaimsPage() {
                         <div className="space-y-1">
                           {sources.map((source, idx) => (
                             <p key={`${source.filename}-${idx}`} className="text-xs text-muted-foreground">
-                              {source.filename} {source.policy_owner ? `(${source.policy_owner})` : ""}
+                              {source.filename}
+                              {source.chunk_type === "clause_summary" ? " (extracted clauses)" : ""}
+                              {source.policy_owner ? ` — ${source.policy_owner}` : ""}
                             </p>
                           ))}
                         </div>
