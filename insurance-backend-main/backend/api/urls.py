@@ -23,6 +23,8 @@ urlpatterns = [
     # Family Vault RBAC (Supabase-authenticated)
     path('family-vault/subprofiles/', views.family_subprofiles),
     path('family-vault/managers/', views.family_subprofile_managers),
+    path('family-vault/managers/<uuid:manager_id>/revoke/', views.family_subprofile_manager_revoke),
     path('family-vault/policies/', views.family_policies),
     path('family-vault/shares/', views.family_policy_shares),
+    path('family-vault/lookup-user/', views.family_lookup_user),
 ]

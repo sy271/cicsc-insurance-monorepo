@@ -131,35 +131,150 @@ def _vector_db_dir():
     return Path(settings.BASE_DIR) / "chroma_db"
 
 
-def _get_embeddings():
-    return GoogleGenerativeAIEmbeddings(
-        model=os.getenv("GEMINI_EMBEDDING_MODEL", "models/text-embedding-004"),
-        google_api_key=os.getenv("GEMINI_API_KEY"),
-    )
+# ─────────────────────────────────────────────────────────────────────────────
+# Supabase pgvector RAG pipeline
+#   Embeddings  : all-MiniLM-L6-v2  via HuggingFace Inference API  (384-dim)
+#   Vector store: Supabase PostgreSQL pgvector
+#   Generation  : Llama 3 via HuggingFace Inference API
+# ─────────────────────────────────────────────────────────────────────────────
+_pg_vector_table_ready = False
 
+def _pg_conn():
+    """Return a psycopg connection to Supabase PostgreSQL."""
+    import psycopg
+    db_url = (os.getenv("DATABASE_URL") or "").strip()
+    if not db_url:
+        raise RuntimeError("DATABASE_URL is not set in .env")
+    return psycopg.connect(db_url, sslmode="require")
 
-def _get_vector_store():
-    return Chroma(
-        collection_name=_VECTOR_COLLECTION,
-        embedding_function=_get_embeddings(),
-        persist_directory=str(_vector_db_dir()),
+def _ensure_pg_vector_table():
+    """Create the policy_vectors table and ivfflat index if they don't exist yet."""
+    global _pg_vector_table_ready
+    if _pg_vector_table_ready:
+        return
+    try:
+        with _pg_conn() as conn:
+            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS policy_vectors (
+                    id BIGSERIAL PRIMARY KEY,
+                    content TEXT NOT NULL,
+                    embedding vector(384),
+                    metadata JSONB DEFAULT '{}',
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS policy_vectors_emb_idx
+                ON policy_vectors USING ivfflat (embedding vector_cosine_ops)
+                WITH (lists = 50)
+            """)
+            conn.commit()
+        _pg_vector_table_ready = True
+    except Exception as exc:
+        logger.warning("pgvector table setup skipped: %s", exc)
+
+def _hf_embed(texts: list) -> list:
+    """
+    Embed a list of strings with all-MiniLM-L6-v2 via HF Inference API.
+    Returns list of 384-dim float lists.
+    """
+    from huggingface_hub import InferenceClient
+    token = (os.getenv("HF_API_TOKEN") or "").strip()
+    if not token:
+        raise RuntimeError("HF_API_TOKEN is not set in .env")
+    client = InferenceClient(token=token)
+    result = client.feature_extraction(
+        texts,
+        model="sentence-transformers/all-MiniLM-L6-v2",
     )
+    # result is a numpy array (n_texts × 384) or list of lists
+    import numpy as np
+    arr = np.array(result)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    return arr.tolist()
+
+def _vec_literal(vec: list) -> str:
+    """Convert a float list to a Postgres vector literal string."""
+    return "[" + ",".join(f"{v:.8f}" for v in vec) + "]"
+
 
 
 def _index_policy_text(text: str, metadata: dict):
+    """Chunk policy text and upsert embeddings into Supabase pgvector."""
     if not text.strip():
         return
+    
+    try:
+        _ensure_pg_vector_table()
+        splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+        chunks = splitter.split_text(text)
+        if not chunks:
+            return
+        embeddings = _hf_embed(chunks)
+        with _pg_conn() as conn:
+            for chunk, emb in zip(chunks, embeddings):
+                conn.execute(
+                    """INSERT INTO policy_vectors (content, embedding, metadata)
+                       VALUES (%s, %s::vector, %s::jsonb)""",
+                    (chunk, _vec_literal(emb), json.dumps(metadata)),
+                )
+            conn.commit()
+    except Exception as exc:
+        logger.exception("pgvector indexing failed: %s", exc)
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=180)
-    chunks = splitter.split_text(text)
-    if not chunks:
-        return
+def _retrieve_policy_chunks(query: str, policy_owner: str = "", k: int = 4) -> list:
+    """
+    Retrieve top-k policy chunks from Supabase pgvector most similar to query.
+    Optionally filter by policy_owner metadata field.
+    Returns list of (content, metadata) tuples.
+    """
+    _ensure_pg_vector_table()
+    emb = _hf_embed([query])[0]
+    vec = _vec_literal(emb)
+    try:
+        with _pg_conn() as conn:
+            if policy_owner:
+                rows = conn.execute(
+                    """SELECT content, metadata
+                       FROM policy_vectors
+                       WHERE metadata->>'policy_owner' ILIKE %s
+                       ORDER BY embedding <=> %s::vector
+                       LIMIT %s""",
+                    (policy_owner, vec, k),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT content, metadata
+                       FROM policy_vectors
+                       ORDER BY embedding <=> %s::vector
+                       LIMIT %s""",
+                    (vec, k),
+                ).fetchall()
+        return rows
+    except Exception as exc:
+        logger.exception("pgvector retrieval failed: %s", exc)
+        return []
 
-    docs = [Document(page_content=chunk, metadata=metadata) for chunk in chunks]
-    store = _get_vector_store()
-    store.add_documents(docs)
-
-
+def _llama_generate(system_prompt: str, user_prompt: str) -> str:
+    """Generate a response using Llama via HuggingFace Inference API."""
+    from huggingface_hub import InferenceClient
+    token = (os.getenv("HF_API_TOKEN") or "").strip()
+    if not token:
+        raise RuntimeError("HF_API_TOKEN is not set in .env")
+    model = os.getenv("HF_LLAMA_MODEL", "meta-llama/Meta-Llama-3-8B-Instruct")
+    client = InferenceClient(model=model, token=token)
+    result = client.chat_completion(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_tokens=600,
+        temperature=0.2,
+    )
+    return (result.choices[0].message.content or "").strip()
+    
 def _read_uploaded_policies():
     path = _uploaded_policies_path()
     if not path.exists():
@@ -760,9 +875,10 @@ def analyze_with_assistant(request):
 @api_view(["POST"])
 def emergency_rag_chat(request):
     """
-    RAG emergency chatbot:
-    1) Retrieve relevant policy chunks from ChromaDB
-    2) Ground Gemini response on retrieved context
+    Emergency RAG chatbot (Supabase pgvector + Llama via HF Inference API):
+    1) Embed the query with all-MiniLM-L6-v2 via HF API
+    2) Retrieve top-k policy chunks from Supabase pgvector
+    3) Generate a grounded emergency response via Llama 3
     """
     user_message = (request.data.get("message") or "").strip()
     policy_owner = (request.data.get("policy_owner") or "").strip().lower()
@@ -771,10 +887,7 @@ def emergency_rag_chat(request):
         return Response({"error": "message is required"}, status=400)
 
     try:
-        # Retrieval
-        store = _get_vector_store()
-        retriever = store.as_retriever(search_kwargs={"k": 4})
-        docs = retriever.invoke(user_message)
+        rows = _retrieve_policy_chunks(user_message, policy_owner=policy_owner, k=4)
 
         if policy_owner:
             docs = [
@@ -1065,7 +1178,14 @@ def family_subprofiles(request):
 
 
 @api_view(["GET", "POST"])
+@parser_classes([MultiPartParser])
 def family_policies(request):
+    """
+    GET  — list all policies accessible to the authenticated user.
+    POST — upload a PDF for a sub-profile:
+           extracts text via PyMuPDF, runs Gemini structured extraction,
+           saves to DB, and indexes chunks in Supabase pgvector for RAG.
+    """
     user_id, err = _get_supabase_user_id(request)
     if err:
         return err
@@ -1079,6 +1199,7 @@ def family_policies(request):
         rows = (own | managed_subprofile | shared).distinct().order_by("-created_at")
         return Response(PolicyDocumentSerializer(rows, many=True).data)
 
+    # POST processing
     sub_profile_id = request.data.get("sub_profile")
     if not sub_profile_id:
         return Response({"error": "sub_profile is required"}, status=400)
@@ -1094,11 +1215,94 @@ def family_policies(request):
             status=403,
         )
 
-    serializer = PolicyDocumentSerializer(data=request.data)
+    uploaded_file = request.FILES.get("file")
+    title = (request.data.get("title") or "").strip()
+    insurance_type = (request.data.get("insurance_type") or "other").strip()
+    provider = (request.data.get("provider") or "").strip()
+    
+    extracted_metadata: dict = {}
+    policy_text = ""
+    
+    if uploaded_file:
+        # Extract and analyse PDF
+        client, err_resp = _require_gemini_client()
+        if err_resp:
+            return err_resp
+        try:
+            policy_text = extract_and_minimize_pdf(uploaded_file)
+        except Exception:
+            uploaded_file.seek(0)
+            policy_text = uploaded_file.read().decode("utf-8", errors="ignore")[:25000]
+    
+            extract_prompt = (
+                "Extract insurance policy details. "
+                "Return ONLY a JSON object with keys: "
+                "insurance_type, insurance_provider, policy_number, "
+                "coverage_benefits (array), expiry_date, cost, important_details (array). "
+                "Use null for missing values.\n\n"
+                f"Policy text:\n{policy_text[:15000]}"
+            )
+            try:
+                result = client.models.generate_content(
+                    model=os.getenv("GEMINI_DOC_MODEL", "gemini-1.5-flash"),
+                    contents=[extract_prompt],
+                )
+                raw = getattr(result, "text", "") or ""
+                # strip markdown fences if present
+                cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+                extracted_metadata = json.loads(cleaned)
+                if not title:
+                    title = str(extracted_metadata.get("insurance_type") or uploaded_file.name)
+                if not provider:
+                    provider = str(extracted_metadata.get("insurance_provider") or "")
+                if not insurance_type or insurance_type == "other":
+                    raw_type = str(extracted_metadata.get("insurance_type") or "").lower()
+                    for t in ("life", "medical", "motor", "travel"):
+                        if t in raw_type:
+                            insurance_type = t
+                            break
+            except Exception:
+                logger.exception("Gemini extraction failed; saving without metadata")
+
+    if not title:
+        title = (uploaded_file.name if uploaded_file else "Untitled Policy")
+
+    policy_data = {
+        "sub_profile": str(sub_profile_id),
+        "title": title,
+        "insurance_type": insurance_type,
+        "provider": provider,
+        "storage_url": request.data.get("storage_url") or "uploaded-pdf",
+        "metadata": extracted_metadata,
+    }
+    serializer = PolicyDocumentSerializer(data=policy_data)
+
     if not serializer.is_valid():
         return Response(serializer.errors, status=400)
-    serializer.save(uploaded_by_supabase_uid=user_id)
-    return Response(serializer.data, status=201)
+    doc = serializer.save(uploaded_by_supabase_uid=user_id)
+
+     # Index into Supabase pgvector for Emergency RAG
+    if policy_text.strip():
+        try:
+            _index_policy_text(
+                policy_text,
+                {
+                    "filename": uploaded_file.name if uploaded_file else title,
+                    "policy_owner": sub.full_name,
+                    "policy_id": str(doc.id),
+                    "sub_profile_id": str(sub_profile_id),
+                },
+            )
+            _append_uploaded_policy({
+                "filename": uploaded_file.name if uploaded_file else title,
+                "content_type": uploaded_file.content_type if uploaded_file else "",
+                "extracted": extracted_metadata,
+                "stored_at": time.time(),
+            })
+        except Exception:
+            logger.exception("Background RAG indexing failed; policy was saved to DB")
+
+    return Response(PolicyDocumentSerializer(doc).data, status=201)
 
 
 @api_view(["GET", "POST"])
@@ -1192,3 +1396,46 @@ def family_subprofile_managers(request):
 
     serializer = FamilySubProfileManagerSerializer(row)
     return Response(serializer.data, status=201 if created else 200)
+
+@api_view(["GET"])
+def family_lookup_user(request):
+    """
+    Look up a Supabase user UID by email using the Supabase Admin REST API.
+    Requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env.
+    Query param: ?email=user@example.com
+    """
+    user_id, err = _get_supabase_user_id(request)
+    if err:
+        return err
+    email = (request.GET.get("email") or "").strip().lower()
+    if not email:
+        return Response({"error": "email query param is required"}, status=400)
+    supabase_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+    service_key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    if not supabase_url or not service_key:
+        return Response(
+            {"error": "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in .env"},
+            status=503,
+        )
+    try:
+        import httpx as _httpx
+        resp = _httpx.get(
+            f"{supabase_url}/auth/v1/admin/users",
+            headers={
+                "Authorization": f"Bearer {service_key}",
+                "apikey": service_key,
+            },
+            params={"page": 1, "per_page": 1000},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return Response({"error": "Supabase admin API error", "detail": resp.text}, status=502)
+        data = resp.json()
+        users = data.get("users") or []
+        for u in users:
+            if (u.get("email") or "").lower() == email:
+                return Response({"uid": u["id"], "email": u["email"]})
+        return Response({"error": f"No user found with email: {email}"}, status=404)
+    except Exception as e:
+        logger.exception("family_lookup_user failed")
+        return Response({"error": str(e)}, status=500)
