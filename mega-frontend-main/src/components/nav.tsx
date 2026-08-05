@@ -2,10 +2,12 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { AuthButton } from '@/components/auth-button'
 
 const navigation = [
   { name: 'Home', href: '/' },
   { name: 'Dashboard', href: '/dashboard' },
+  { name: 'Family Vault', href: '/family-vault' },
   { name: 'Insurance', href: '/insurance' },
   { name: 'Policies', href: '/policies' },
   { name: 'Analysis', href: '/analysis' },
@@ -22,7 +24,7 @@ export function MainNav() {
           <div className="flex">
             <div className="flex flex-shrink-0 items-center">
               <Link href="/" className="text-xl font-bold text-blue-600">
-                InsuranceHub
+                PolicySense
               </Link>
             </div>
             <div className="hidden sm:ml-6 sm:flex sm:space-x-8">
@@ -45,12 +47,15 @@ export function MainNav() {
             </div>
           </div>
           <div className="hidden sm:ml-6 sm:flex sm:items-center">
-            <Link
-              href="/personal-details"
-              className="rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
-            >
-              My Account
-            </Link>
+            <div className="flex items-center gap-3">
+              <Link
+                href="/personal-details"
+                className="rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+              >
+                My Account
+              </Link>
+              <AuthButton />
+            </div>
           </div>
         </div>
       </div>

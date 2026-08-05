@@ -4,4 +4,12 @@ python-dotenv
 openai
 google-genai
 deepseek-sdk
-PyPDF2
+PyMuPDF
+python-jose
+psycopg[binary]
+dj-database-url
+langchain
+langchain-chroma
+langchain-core
+langchain-google-genai
+langchain-text-splitters

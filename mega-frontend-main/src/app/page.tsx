@@ -1,3 +1,4 @@
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Shield, Sparkles, Clock, FileCheck } from "lucide-react"
@@ -13,7 +14,9 @@ export default function Home() {
             <h1 className="text-5xl font-bold mb-6">Simplify Your Insurance Management</h1>
             <p className="text-xl mb-8">Stop juggling multiple insurance policies. Get a clear view of your coverage and optimize your protection with our AI-powered platform.</p>
             <div className="flex gap-4">
-              <Button size="lg" variant="secondary">Get Started</Button>
+              <Button size="lg" variant="secondary" asChild>
+                <Link href="/auth/sign-up">Get Started</Link>
+              </Button>
               <Button size="lg" variant="outline" className="text-white border-white hover:bg-white/20">Learn More</Button>
             </div>
           </div>
@@ -79,7 +82,9 @@ export default function Home() {
         <div className="container mx-auto px-4 py-16 text-center">
           <h2 className="text-3xl font-bold mb-4">Ready to Take Control of Your Insurance?</h2>
           <p className="text-xl text-gray-600 mb-8">Join thousands of users who have simplified their insurance management.</p>
-          <Button size="lg">Get Started Now</Button>
+          <Button size="lg" asChild>
+            <Link href="/auth/sign-up">Get Started Now</Link>
+          </Button>
         </div>
       </div>
     </div>

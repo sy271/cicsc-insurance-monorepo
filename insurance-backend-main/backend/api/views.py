@@ -10,15 +10,32 @@ from rest_framework.response import Response
 from django.core.cache import cache
 from google import genai
 from google.genai import types
+from google.genai import errors as genai_errors
 import os
 from dotenv import load_dotenv
 import httpx
 import logging
-import PyPDF2
+import fitz  # PyMuPDF
 from openai import APIError, BadRequestError, OpenAI
 from django.http import JsonResponse
 from django.conf import settings
 from pathlib import Path
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_chroma import Chroma
+from langchain_core.documents import Document
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from .models import FamilySubProfile, PolicyDocument, PolicyShare
+from .serializers import (
+    FamilySubProfileSerializer,
+    PolicyDocumentSerializer,
+    PolicyShareSerializer,
+)
+
+try:
+    from jose import jwt, JWTError
+except Exception:  # pragma: no cover - import guard for missing dependency
+    jwt = None
+    JWTError = Exception
 
 # Configuration — always load backend/.env (folder that contains manage.py)
 load_dotenv(settings.BASE_DIR / ".env")
@@ -35,6 +52,7 @@ THREAD_ID = "thread_feAuVoWDJCTzyfTrbXh6qUNJ"
 
 # Set up logging
 logger = logging.getLogger(__name__)
+_VECTOR_COLLECTION = "family_policy_docs"
 
 PERSONAL_DETAILS_DEFAULT = {
     "income": 0,
@@ -56,8 +74,68 @@ def _require_gemini_client():
     return gemini_client, None
 
 
+def _get_supabase_user_id(request):
+    """
+    Validate Supabase bearer token and return user UUID string.
+    Expects Authorization: Bearer <access_token>.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return None, Response({"error": "Missing bearer token"}, status=401)
+
+    token = auth_header.replace("Bearer ", "", 1).strip()
+    jwt_secret = (os.getenv("SUPABASE_JWT_SECRET") or "").strip()
+    if not jwt_secret or not jwt:
+        return None, Response(
+            {"error": "SUPABASE_JWT_SECRET is missing or JWT dependency unavailable"},
+            status=500,
+        )
+
+    try:
+        payload = jwt.decode(token, jwt_secret, algorithms=["HS256"], options={"verify_aud": False})
+        user_id = payload.get("sub")
+        if not user_id:
+            return None, Response({"error": "Invalid token payload"}, status=401)
+        return user_id, None
+    except JWTError:
+        return None, Response({"error": "Invalid or expired token"}, status=401)
+
+
 def _uploaded_policies_path():
     return Path(settings.BASE_DIR) / "uploaded_policies.json"
+
+
+def _vector_db_dir():
+    return Path(settings.BASE_DIR) / "chroma_db"
+
+
+def _get_embeddings():
+    return GoogleGenerativeAIEmbeddings(
+        model=os.getenv("GEMINI_EMBEDDING_MODEL", "models/text-embedding-004"),
+        google_api_key=os.getenv("GEMINI_API_KEY"),
+    )
+
+
+def _get_vector_store():
+    return Chroma(
+        collection_name=_VECTOR_COLLECTION,
+        embedding_function=_get_embeddings(),
+        persist_directory=str(_vector_db_dir()),
+    )
+
+
+def _index_policy_text(text: str, metadata: dict):
+    if not text.strip():
+        return
+
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=180)
+    chunks = splitter.split_text(text)
+    if not chunks:
+        return
+
+    docs = [Document(page_content=chunk, metadata=metadata) for chunk in chunks]
+    store = _get_vector_store()
+    store.add_documents(docs)
 
 
 def _read_uploaded_policies():
@@ -88,13 +166,19 @@ def extract_and_minimize_pdf(uploaded_file, max_pages=10, max_chars=25000):
     This reduces token usage for large policy documents.
     """
     uploaded_file.seek(0)
-    reader = PyPDF2.PdfReader(uploaded_file)
-    pages_to_read = min(max_pages, len(reader.pages))
+    pdf_bytes = uploaded_file.read()
+    if not pdf_bytes:
+        return ""
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    pages_to_read = min(max_pages, doc.page_count)
     chunks = []
     for i in range(pages_to_read):
-        page_text = reader.pages[i].extract_text() or ""
+        page = doc.load_page(i)
+        page_text = page.get_text("text") or ""
         if page_text:
             chunks.append(page_text)
+    doc.close()
     minimized_text = "\n".join(chunks).strip()
     return minimized_text[:max_chars]
 
@@ -614,10 +698,21 @@ def analyze_with_assistant(request):
         f"Policy text:\n{minimized_policy_text}"
     )
 
-    result = client.models.generate_content(
-        model=os.getenv("GEMINI_DOC_MODEL", "gemini-1.5-flash"),
-        contents=[prompt],
-    )
+    try:
+        result = client.models.generate_content(
+            model=os.getenv("GEMINI_DOC_MODEL", "gemini-1.5-flash"),
+            contents=[prompt],
+        )
+    except genai_errors.ServerError as e:
+        logger.warning(f"Gemini server overloaded: {e}")
+        return Response(
+            {"error": "The AI model is currently overloaded. Please try again in a moment."},
+            status=503,
+        )
+    except genai_errors.ClientError as e:
+        logger.error(f"Gemini client error: {e}")
+        return Response({"error": "Failed to analyze document", "details": str(e)}, status=400)
+
     text = getattr(result, "text", None) or ""
 
     stored_payload = None
@@ -627,6 +722,16 @@ def analyze_with_assistant(request):
         stored_payload = None
 
     try:
+        # Index extracted policy text into local ChromaDB for emergency RAG chatbot.
+        _index_policy_text(
+            minimized_policy_text,
+            {
+                "filename": uploaded_file.name,
+                "policy_owner": request.data.get("policy_owner", "family-member"),
+                "policy_type_hint": request.data.get("policy_type", "unknown"),
+            },
+        )
+
         _append_uploaded_policy(
             {
                 "filename": uploaded_file.name,
@@ -639,6 +744,80 @@ def analyze_with_assistant(request):
         logger.exception("Failed to persist extracted policy")
 
     return JsonResponse({"response": text})
+
+
+@api_view(["POST"])
+def emergency_rag_chat(request):
+    """
+    RAG emergency chatbot:
+    1) Retrieve relevant policy chunks from ChromaDB
+    2) Ground Gemini response on retrieved context
+    """
+    user_message = (request.data.get("message") or "").strip()
+    policy_owner = (request.data.get("policy_owner") or "").strip().lower()
+
+    if not user_message:
+        return Response({"error": "message is required"}, status=400)
+
+    try:
+        # Retrieval
+        store = _get_vector_store()
+        retriever = store.as_retriever(search_kwargs={"k": 4})
+        docs = retriever.invoke(user_message)
+
+        if policy_owner:
+            docs = [
+                d
+                for d in docs
+                if str(d.metadata.get("policy_owner", "")).strip().lower() == policy_owner
+            ] or docs
+
+        context_blocks = []
+        for i, doc in enumerate(docs, start=1):
+            source = doc.metadata.get("filename", "policy")
+            context_blocks.append(f"[Source {i}: {source}]\n{doc.page_content}")
+        context_text = "\n\n".join(context_blocks).strip()
+
+        if not context_text:
+            return Response(
+                {
+                    "response": "I could not find indexed policy context yet. Please upload policy documents first.",
+                    "sources": [],
+                }
+            )
+
+        # Generation with grounded prompt
+        llm = ChatGoogleGenerativeAI(
+            model=os.getenv("GEMINI_CHAT_MODEL", "gemini-1.5-flash"),
+            google_api_key=os.getenv("GEMINI_API_KEY"),
+            temperature=0.2,
+        )
+
+        prompt = (
+            "You are an emergency insurance assistant. Use ONLY the provided policy context.\n"
+            "If information is missing, say what is missing and what document is needed.\n"
+            "Give practical step-by-step claim actions.\n\n"
+            f"User emergency message:\n{user_message}\n\n"
+            f"Policy context:\n{context_text}\n"
+        )
+
+        result = llm.invoke(prompt)
+        answer = getattr(result, "content", "") or ""
+        return Response(
+            {
+                "response": answer,
+                "sources": [
+                    {
+                        "filename": d.metadata.get("filename", "policy"),
+                        "policy_owner": d.metadata.get("policy_owner", ""),
+                    }
+                    for d in docs
+                ],
+            }
+        )
+    except Exception as e:
+        logger.exception("emergency_rag_chat failed")
+        return Response({"error": str(e)}, status=500)
 
 
     
@@ -853,3 +1032,80 @@ def analyze_policies(request):
         )
 
     return Response(recommendations)
+
+
+@api_view(["GET", "POST"])
+def family_subprofiles(request):
+    user_id, err = _get_supabase_user_id(request)
+    if err:
+        return err
+
+    if request.method == "GET":
+        rows = FamilySubProfile.objects.filter(owner_supabase_uid=user_id).order_by("-created_at")
+        return Response(FamilySubProfileSerializer(rows, many=True).data)
+
+    serializer = FamilySubProfileSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=400)
+    serializer.save(owner_supabase_uid=user_id)
+    return Response(serializer.data, status=201)
+
+
+@api_view(["GET", "POST"])
+def family_policies(request):
+    user_id, err = _get_supabase_user_id(request)
+    if err:
+        return err
+
+    if request.method == "GET":
+        own = PolicyDocument.objects.filter(sub_profile__owner_supabase_uid=user_id)
+        shared = PolicyDocument.objects.filter(shares__shared_with_supabase_uid=user_id)
+        rows = (own | shared).distinct().order_by("-created_at")
+        return Response(PolicyDocumentSerializer(rows, many=True).data)
+
+    sub_profile_id = request.data.get("sub_profile")
+    if not sub_profile_id:
+        return Response({"error": "sub_profile is required"}, status=400)
+
+    try:
+        sub = FamilySubProfile.objects.get(id=sub_profile_id)
+    except FamilySubProfile.DoesNotExist:
+        return Response({"error": "Sub-profile not found"}, status=404)
+
+    if str(sub.owner_supabase_uid) != str(user_id):
+        return Response({"error": "Not allowed to upload for this sub-profile"}, status=403)
+
+    serializer = PolicyDocumentSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=400)
+    serializer.save(uploaded_by_supabase_uid=user_id)
+    return Response(serializer.data, status=201)
+
+
+@api_view(["GET", "POST"])
+def family_policy_shares(request):
+    user_id, err = _get_supabase_user_id(request)
+    if err:
+        return err
+
+    if request.method == "GET":
+        rows = PolicyShare.objects.filter(shared_with_supabase_uid=user_id).order_by("-created_at")
+        return Response(PolicyShareSerializer(rows, many=True).data)
+
+    policy_id = request.data.get("policy")
+    if not policy_id:
+        return Response({"error": "policy is required"}, status=400)
+
+    try:
+        policy = PolicyDocument.objects.select_related("sub_profile").get(id=policy_id)
+    except PolicyDocument.DoesNotExist:
+        return Response({"error": "Policy not found"}, status=404)
+
+    if str(policy.sub_profile.owner_supabase_uid) != str(user_id):
+        return Response({"error": "Only owner can share this policy"}, status=403)
+
+    serializer = PolicyShareSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=400)
+    serializer.save(shared_by_supabase_uid=user_id)
+    return Response(serializer.data, status=201)

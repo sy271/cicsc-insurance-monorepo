@@ -327,6 +327,40 @@ export default function AnalysisPage() {
           </div>
         </CardContent>
       </Card>
+
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle>Family Gap Analysis & Agent Upselling (Mock)</CardTitle>
+          <CardDescription>
+            Cross-family risk alerts and suggested products for B2B agent workflow.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Alert className="border-red-200 bg-red-50">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>High Priority Gap</AlertTitle>
+            <AlertDescription>
+              Dad has Life Insurance but no active Medical policy.
+            </AlertDescription>
+          </Alert>
+
+          <Alert className="border-yellow-200 bg-yellow-50">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>Upcoming Expiry</AlertTitle>
+            <AlertDescription>
+              Family Motor policy expires in 5 days. Renewal and top-up are recommended.
+            </AlertDescription>
+          </Alert>
+
+          <Alert className="border-blue-200 bg-blue-50">
+            <CheckCircle className="h-4 w-4" />
+            <AlertTitle>Upselling Opportunity</AlertTitle>
+            <AlertDescription>
+              Agent suggestion: Offer family medical rider + motor roadside assistance bundle.
+            </AlertDescription>
+          </Alert>
+        </CardContent>
+      </Card>
     </div>
   );
 }

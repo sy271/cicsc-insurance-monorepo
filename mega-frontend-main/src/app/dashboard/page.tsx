@@ -97,6 +97,33 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle>Core Module Coverage</CardTitle>
+          <CardDescription>Status of the 4-module architecture in this build</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="border rounded-lg p-4">
+              <p className="font-medium">Module 1: Hybrid Family Vault</p>
+              <p className="text-sm text-muted-foreground mt-1">Sub-profiles + RBAC sharing (UI ready)</p>
+            </div>
+            <div className="border rounded-lg p-4">
+              <p className="font-medium">Module 2: Smart Document Classifier</p>
+              <p className="text-sm text-muted-foreground mt-1">AI PDF classification + extraction flow active</p>
+            </div>
+            <div className="border rounded-lg p-4">
+              <p className="font-medium">Module 3: Gap & Premium Optimization</p>
+              <p className="text-sm text-muted-foreground mt-1">Overlap engine + family gap alerts with upselling mock</p>
+            </div>
+            <div className="border rounded-lg p-4">
+              <p className="font-medium">Module 4: Emergency RAG + Claims UI</p>
+              <p className="text-sm text-muted-foreground mt-1">Claims assistant with automation mock wizard</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }

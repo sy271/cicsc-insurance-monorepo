@@ -34,7 +34,7 @@ export default function InsurancePage() {
       name: 'Term Life Insurance',
       coverage: 500000,
       premium: 1200,
-      status: 'adequate',
+      status: 'insufficient',
       expiry: '2025-12-31'
     },
     {
@@ -64,7 +64,7 @@ export default function InsurancePage() {
       name: 'Car Insurance',
       coverage: 50000,
       premium: 800,
-      status: 'insufficient',
+      status: 'adequate',
       expiry: '2025-09-30'
     },
     {

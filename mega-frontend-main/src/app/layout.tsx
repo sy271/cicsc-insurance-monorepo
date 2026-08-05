@@ -5,6 +5,7 @@ import { MainNav } from "@/components/nav";
 import { Footer } from "@/components/footer";
 import { Toaster } from 'sonner';
 import { ChatDrawer } from "@/components/chat-drawer";
+import { AuthGuard } from "@/components/auth-guard";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -17,7 +18,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "InsuranceHub - Simplify Your Insurance Management",
+  title: "PolicySense - Simplify Your Insurance Management",
   description: "All your insurance policies in one place. Analyze coverage, detect gaps, and manage claims with our AI-powered platform.",
 };
 
@@ -33,7 +34,9 @@ export default function RootLayout({
       >
         <div className="min-h-screen flex flex-col">
           <MainNav />
-          <main className="flex-1">{children}</main>
+          <main className="flex-1">
+            <AuthGuard>{children}</AuthGuard>
+          </main>
           <Footer />
           <Toaster position="bottom-right" />
           <ChatDrawer />

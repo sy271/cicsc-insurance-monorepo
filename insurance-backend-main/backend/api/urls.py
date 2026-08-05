@@ -18,4 +18,10 @@ urlpatterns = [
     path('personal-details', views.personal_details),
     
     path('duplicate-policies/', views.check_duplicated_policies),
+    path('emergency-rag-chat/', views.emergency_rag_chat),
+
+    # Family Vault RBAC (Supabase-authenticated)
+    path('family-vault/subprofiles/', views.family_subprofiles),
+    path('family-vault/policies/', views.family_policies),
+    path('family-vault/shares/', views.family_policy_shares),
 ]

@@ -1,7 +1,7 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { MessageSquare, ClipboardList, Clock } from "lucide-react"
+import { MessageSquare, Clock, ShieldCheck } from "lucide-react"
 
 export default function ClaimsPage() {
   return (
@@ -9,10 +9,11 @@ export default function ClaimsPage() {
       <h1 className="text-4xl font-bold mb-6">Claims Assistant</h1>
 
       <Tabs defaultValue="report" className="w-full">
-        <TabsList className="grid w-full grid-cols-3 mb-6">
+        <TabsList className="grid w-full grid-cols-4 mb-6">
           <TabsTrigger value="report">Report Incident</TabsTrigger>
           <TabsTrigger value="verify">Coverage Check</TabsTrigger>
           <TabsTrigger value="track">Track Claims</TabsTrigger>
+          <TabsTrigger value="automation">AI Automation (Mock)</TabsTrigger>
         </TabsList>
 
         <TabsContent value="report">
@@ -138,6 +139,52 @@ export default function ClaimsPage() {
                 </div>
 
                 <Button variant="outline" className="w-full">View All Claims</Button>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="automation">
+          <Card>
+            <CardHeader>
+              <CardTitle>Emergency RAG + Claims Automation</CardTitle>
+              <CardDescription>
+                Mock flow: AI reads family policies, verifies eligibility, and prepares settlement checklist.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                <div className="border rounded-lg p-4">
+                  <h3 className="font-medium mb-2">Emergency Prompt</h3>
+                  <p className="text-sm text-gray-600">
+                    &quot;My dad got into a car crash.&quot; {"->"} AI reads Dad&apos;s Motor + Medical policies, then explains
+                    towing, hospital admission limits, and next claim steps.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="border rounded-lg p-4">
+                    <p className="font-medium">1) Document Verification</p>
+                    <p className="text-sm text-gray-600 mt-1">IC, police report, photos, workshop invoice</p>
+                  </div>
+                  <div className="border rounded-lg p-4">
+                    <p className="font-medium">2) Eligibility Checks</p>
+                    <p className="text-sm text-gray-600 mt-1">Coverage period, exclusions, deductible review</p>
+                  </div>
+                  <div className="border rounded-lg p-4">
+                    <p className="font-medium">3) Settlement Preparation</p>
+                    <p className="text-sm text-gray-600 mt-1">Estimate payout and route to insurer workflow</p>
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-3 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                  <ShieldCheck className="h-5 w-5 mt-0.5 text-blue-600" />
+                  <p className="text-sm text-blue-900">
+                    This is a mock automation UI for demo. Production mode would run live insurer integrations.
+                  </p>
+                </div>
+
+                <Button className="w-full">Start Guided Claim Wizard</Button>
               </div>
             </CardContent>
           </Card>

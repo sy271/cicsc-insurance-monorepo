@@ -2,10 +2,8 @@
 
 import { useState, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Button } from '@/components/ui/button';
 import { analyzeWithAI } from '@/lib/api';
 import { toast } from 'sonner';
-import { ChatDrawer } from '@/components/chat-drawer';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -29,9 +27,9 @@ export default function ChatPage() {
       ]);
 
       toast.success('Files submitted successfully!');
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error analyzing files:', error);
-      const errorMessage = error.message || 'Unknown error occurred';
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
       toast.error(`Error analyzing files: ${errorMessage}`);
     } finally {
       setIsAnalyzing(false);
@@ -42,6 +40,10 @@ export default function ChatPage() {
 
   return (
     <div className="container mx-auto p-4 max-w-4xl">
+      <h1 className="text-3xl font-bold mb-2">Universal Smart Document Classifier</h1>
+      <p className="text-muted-foreground mb-4">
+        Drop in raw policy PDFs and let AI classify Life, Motor, or Medical while extracting key limits.
+      </p>
 
       <div
         {...getRootProps()}
@@ -51,9 +53,9 @@ export default function ChatPage() {
       >
         <input {...getInputProps()} />
         {isAnalyzing ? (
-          <p>Analyzing files...</p>
+          <p>Classifying and extracting policy details...</p>
         ) : (
-          <p>Drag and drop files here, or click to select files</p>
+          <p>Drag and drop policy PDFs here, or click to select files</p>
         )}
       </div>
 

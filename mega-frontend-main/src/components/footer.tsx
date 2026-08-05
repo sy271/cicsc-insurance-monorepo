@@ -6,7 +6,7 @@ export function Footer() {
           <div>
             <h3 className="text-sm font-semibold text-gray-900 mb-4">About Us</h3>
             <p className="text-sm text-gray-600">
-              InsuranceHub helps you manage all your insurance policies in one place, powered by AI to optimize your coverage.
+              PolicySense helps you manage all your insurance policies in one place, powered by AI to optimize your coverage.
             </p>
           </div>
           <div>
@@ -51,7 +51,7 @@ export function Footer() {
         </div>
         <div className="mt-8 border-t border-gray-200 pt-8">
           <p className="text-sm text-gray-600 text-center">
-            © {new Date().getFullYear()} InsuranceHub. All rights reserved.
+            © {new Date().getFullYear()} PolicySense. All rights reserved.
           </p>
         </div>
       </div>
