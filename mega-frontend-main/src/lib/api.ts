@@ -7,8 +7,21 @@ export const API_BASE_URL =
 async function readFetchError(response: Response): Promise<string> {
   const text = await response.text();
   try {
-    const data = JSON.parse(text) as { error?: string; detail?: string };
-    return data.error || data.detail || text || `Server error: ${response.status}`;
+    const data = JSON.parse(text) as {
+      error?: string;
+      detail?: string;
+      code?: string;
+      retry_after_sec?: number;
+    };
+    let message = data.error || data.detail || text || `Server error: ${response.status}`;
+    if (response.status === 429 && data.code === 'gemini_quota_exceeded') {
+      const retry =
+        typeof data.retry_after_sec === 'number'
+          ? ` Retry in ~${Math.ceil(data.retry_after_sec)}s.`
+          : '';
+      message = `${message}${retry}`;
+    }
+    return message;
   } catch {
     return text || `Server error: ${response.status}`;
   }
@@ -55,9 +68,55 @@ export async function analyzePolicies(insurances: any[]) {
   }
 }
 
-export async function analyzeDocument(file: File) {
+export interface ExtractedClause {
+  clause_type: string;
+  found: boolean;
+  value: string | null;
+  excerpt: string | null;
+  page_number: number | null;
+  char_start: number | null;
+  char_end: number | null;
+  confidence: number;
+}
+
+export interface StructuredPolicyExtraction {
+  insurance_type: string | null;
+  insurance_provider: string | null;
+  policy_number: string | null;
+  expiry_date: string | null;
+  cost: string | null;
+  coverage_benefits: string[];
+  important_details: string[];
+  detected_policy_type: 'medical' | 'life' | 'motor' | 'travel' | 'other';
+  policy_type_confidence: number;
+  clauses: ExtractedClause[];
+}
+
+export interface PolicyExtractionMeta {
+  pages_read: number;
+  page_count: number;
+  truncated: boolean;
+  policy_type_hint: string | null;
+}
+
+export interface AnalyzeDocumentResponse {
+  response: StructuredPolicyExtraction | string;
+  raw_response?: string;
+  extraction_meta?: PolicyExtractionMeta;
+  rag_indexed?: boolean;
+  rag_chunks?: number;
+  rag_error?: string | null;
+}
+
+export async function analyzeDocument(
+  file: File,
+  options?: { policyType?: string }
+) {
   const formData = new FormData();
   formData.append('file', file);
+  if (options?.policyType) {
+    formData.append('policy_type', options.policyType);
+  }
 
   try {
     const response = await fetch(`${API_BASE_URL}/api/openai-file/`, {
@@ -72,7 +131,7 @@ export async function analyzeDocument(file: File) {
       throw new Error(await readFetchError(response));
     }
 
-    return await response.json();
+    return (await response.json()) as AnalyzeDocumentResponse;
   } catch (error) {
     console.error('Error analyzing document:', error);
     throw error;
@@ -215,42 +274,83 @@ export async function updatePersonalDetails(details: PersonalDetails) {
  * Upload policy documents for OpenAI extraction. Django expects multipart field name `file`
  * (one file per request); multiple files are uploaded sequentially and combined.
  */
-export async function analyzeWithAI(files: File[]): Promise<{ response: string }> {
+function formatExtractionForChat(data: StructuredPolicyExtraction): string {
+  const lines = [
+    `Policy type: ${data.detected_policy_type || data.insurance_type || 'unknown'}`,
+    `Provider: ${data.insurance_provider || '—'}`,
+    `Policy number: ${data.policy_number || '—'}`,
+    '',
+    'Extracted clauses:',
+  ]
+  for (const clause of data.clauses || []) {
+    if (!clause.found) continue
+    const page = clause.page_number != null ? ` (p.${clause.page_number})` : ''
+    lines.push(`• ${clause.clause_type}${page}: ${clause.value || clause.excerpt || '—'}`)
+  }
+  return lines.join('\n')
+}
+
+export async function analyzeWithAI(
+  files: File[],
+  options?: { policyType?: string }
+): Promise<{ response: string }> {
   if (!files.length) {
     throw new Error('No files selected');
   }
 
-  const parts: string[] = [];
+  const merged: StructuredPolicyExtraction[] = [];
 
   try {
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const response = await fetch(`${API_BASE_URL}/api/openai-file/`, {
-        method: 'POST',
-        body: formData,
-        headers: {
-          Accept: 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error(await readFetchError(response));
+      const data = await analyzeDocument(file, options);
+      const payload = data.response;
+      if (typeof payload === 'object' && payload !== null) {
+        merged.push(payload);
       }
-
-      const data = (await response.json()) as { response?: string };
-      const text =
-        typeof data.response === 'string'
-          ? data.response
-          : JSON.stringify(data);
-      parts.push(files.length > 1 ? `## ${file.name}\n\n${text}` : text);
     }
 
-    return { response: parts.join('\n\n') };
+    if (merged.length === 1) {
+      return { response: formatExtractionForChat(merged[0]) }
+    }
+
+    return {
+      response: merged.map((m, i) => `## Document ${i + 1}\n${formatExtractionForChat(m)}`).join('\n\n'),
+    }
   } catch (error) {
     console.error('Error analyzing files with AI:', error);
+    throw error;
+  }
+}
+
+export interface EmergencyRagSource {
+  filename: string;
+  policy_owner: string;
+  chunk_type?: string;
+}
+
+export interface EmergencyRagResponse {
+  response: string;
+  sources: EmergencyRagSource[];
+}
+
+export async function emergencyRagChat(message: string, policyOwner?: string): Promise<EmergencyRagResponse> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/emergency-rag-chat/`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ message, policy_owner: policyOwner || "" }),
+    });
+
+    if (!response.ok) {
+      throw new Error(await readFetchError(response));
+    }
+
+    return (await response.json()) as EmergencyRagResponse;
+  } catch (error) {
+    console.error("Error in emergency RAG chat:", error);
     throw error;
   }
 }

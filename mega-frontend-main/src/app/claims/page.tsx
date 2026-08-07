@@ -1,9 +1,40 @@
+"use client"
+
+import { useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { MessageSquare, Clock, ShieldCheck } from "lucide-react"
+import { emergencyRagChat } from "@/lib/api"
 
 export default function ClaimsPage() {
+  const [emergencyPrompt, setEmergencyPrompt] = useState("")
+  const [policyOwner, setPolicyOwner] = useState("")
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [ragResponse, setRagResponse] = useState("")
+  const [sources, setSources] = useState<{ filename: string; policy_owner: string; chunk_type?: string }[]>([])
+
+  const onRunEmergencyRag = async () => {
+    if (!emergencyPrompt.trim()) {
+      setError("Please describe the emergency first.")
+      return
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await emergencyRagChat(emergencyPrompt.trim(), policyOwner.trim())
+      setRagResponse(result.response || "")
+      setSources(result.sources || [])
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to run emergency policy check.")
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <div className="container mx-auto p-6">
       <h1 className="text-4xl font-bold mb-6">Claims Assistant</h1>
@@ -26,8 +57,8 @@ export default function ClaimsPage() {
               <div className="space-y-4">
                 <div className="p-4 border rounded-lg flex items-start gap-4">
                   <MessageSquare className="h-5 w-5 mt-1" />
-                  <textarea 
-                    className="w-full p-2 border rounded-md h-24" 
+                  <textarea
+                    className="w-full p-2 border rounded-md h-24"
                     placeholder="Describe what happened... (e.g., 'I had a car accident' or 'I was admitted to the hospital')"
                   ></textarea>
                 </div>
@@ -147,44 +178,71 @@ export default function ClaimsPage() {
         <TabsContent value="automation">
           <Card>
             <CardHeader>
-              <CardTitle>Emergency RAG + Claims Automation</CardTitle>
+              <CardTitle>Emergency RAG Chat</CardTitle>
               <CardDescription>
-                Mock flow: AI reads family policies, verifies eligibility, and prepares settlement checklist.
+                Ask what happened and get grounded claim guidance from indexed family policy documents.
               </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
                 <div className="border rounded-lg p-4">
-                  <h3 className="font-medium mb-2">Emergency Prompt</h3>
-                  <p className="text-sm text-gray-600">
-                    &quot;My dad got into a car crash.&quot; {"->"} AI reads Dad&apos;s Motor + Medical policies, then explains
-                    towing, hospital admission limits, and next claim steps.
-                  </p>
+                  <h3 className="font-medium mb-2">Emergency Details</h3>
+                  <Textarea
+                    value={emergencyPrompt}
+                    onChange={(event) => setEmergencyPrompt(event.target.value)}
+                    placeholder="Example: My father was admitted to hospital after a car crash. What can we claim now and what documents are needed?"
+                    className="min-h-[110px]"
+                  />
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="border rounded-lg p-4">
-                    <p className="font-medium">1) Document Verification</p>
-                    <p className="text-sm text-gray-600 mt-1">IC, police report, photos, workshop invoice</p>
-                  </div>
-                  <div className="border rounded-lg p-4">
-                    <p className="font-medium">2) Eligibility Checks</p>
-                    <p className="text-sm text-gray-600 mt-1">Coverage period, exclusions, deductible review</p>
-                  </div>
-                  <div className="border rounded-lg p-4">
-                    <p className="font-medium">3) Settlement Preparation</p>
-                    <p className="text-sm text-gray-600 mt-1">Estimate payout and route to insurer workflow</p>
-                  </div>
+                <div className="border rounded-lg p-4">
+                  <h3 className="font-medium mb-2">Optional Policy Owner Filter</h3>
+                  <Input
+                    value={policyOwner}
+                    onChange={(event) => setPolicyOwner(event.target.value)}
+                    placeholder="Leave blank to search all indexed policies"
+                  />
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Optional filter by policy owner name (e.g. a family member&apos;s name from Family Vault).
+                    Policies uploaded on the Policies page are indexed under &quot;family-member&quot;.
+                  </p>
                 </div>
 
                 <div className="flex items-start gap-3 p-4 bg-blue-50 rounded-lg border border-blue-200">
                   <ShieldCheck className="h-5 w-5 mt-0.5 text-blue-600" />
                   <p className="text-sm text-blue-900">
-                    This is a mock automation UI for demo. Production mode would run live insurer integrations.
+                    This response is grounded on your indexed policy chunks. If no policy is found, upload/index policy docs first.
                   </p>
                 </div>
 
-                <Button className="w-full">Start Guided Claim Wizard</Button>
+                {error ? <p className="text-sm text-red-600">{error}</p> : null}
+
+                <Button className="w-full" onClick={onRunEmergencyRag} disabled={loading}>
+                  {loading ? "Checking Policy Coverage..." : "Run Emergency RAG Chat"}
+                </Button>
+
+                {ragResponse ? (
+                  <div className="border rounded-lg p-4 space-y-3">
+                    <p className="font-medium">AI Claim Guidance</p>
+                    <p className="text-sm whitespace-pre-wrap">{ragResponse}</p>
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground mb-1">Grounding Sources</p>
+                      {sources.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">No source metadata returned.</p>
+                      ) : (
+                        <div className="space-y-1">
+                          {sources.map((source, idx) => (
+                            <p key={`${source.filename}-${idx}`} className="text-xs text-muted-foreground">
+                              {source.filename}
+                              {source.chunk_type === "clause_summary" ? " (extracted clauses)" : ""}
+                              {source.policy_owner ? ` — ${source.policy_owner}` : ""}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </CardContent>
           </Card>

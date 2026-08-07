@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import FamilySubProfile, PolicyDocument, PolicyShare
+from .models import FamilySubProfile, PolicyDocument, PolicyShare, FamilySubProfileManager
 
 
 class FamilySubProfileSerializer(serializers.ModelSerializer):
@@ -21,4 +21,11 @@ class PolicyShareSerializer(serializers.ModelSerializer):
         model = PolicyShare
         fields = "__all__"
         read_only_fields = ("id", "shared_by_supabase_uid", "created_at")
+
+
+class FamilySubProfileManagerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FamilySubProfileManager
+        fields = "__all__"
+        read_only_fields = ("id", "granted_by_supabase_uid", "created_at", "updated_at")
 
